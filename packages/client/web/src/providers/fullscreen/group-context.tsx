@@ -83,19 +83,23 @@ export function GroupContextProvider(props: PropsWithChildren) {
 
   const platformGroups: Group[] = useMemo(
     () =>
-      platforms?.map((platform) => ({
-        kind: "platform",
-        id: platform.id,
-        name: platform.metadata?.name ?? getFileStub(platform.path),
-        url: "/fullscreen/platforms/$platformId",
-        params: { platformId: platform.id.toString() },
-        games: games?.filter((game) => game.platformId === platform.id),
-      })) ?? [],
+      platforms
+        ?.map((platform) => ({
+          kind: "platform",
+          id: platform.id,
+          name: platform.metadata?.name ?? getFileStub(platform.path),
+          url: "/fullscreen/platforms/$platformId",
+          params: { platformId: platform.id.toString() },
+          games: games?.filter((game) => game.platformId === platform.id),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)) ?? [],
     [platforms, games],
   );
 
   const allGroups: Group[] = useMemo(() => {
-    return [allGames, recentlyPlayed].concat(platformGroups);
+    return [allGames, recentlyPlayed]
+      .concat(platformGroups)
+      .filter((group) => group.games?.length);
   }, [allGames, recentlyPlayed, platformGroups]);
 
   const { activeGroup, nextGroup, previousGroup } = useMemo(() => {

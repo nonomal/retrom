@@ -4252,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "retrom-client"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "async-compression",
  "dotenvy",
@@ -4263,6 +4263,7 @@ dependencies = [
  "retrom-codegen",
  "retrom-plugin-installer",
  "retrom-plugin-launcher",
+ "retrom-plugin-service-client",
  "serde",
  "serde_json",
  "tauri",
@@ -4283,7 +4284,7 @@ dependencies = [
 
 [[package]]
 name = "retrom-codegen"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "diesel",
  "prost",
@@ -4302,7 +4303,7 @@ dependencies = [
 
 [[package]]
 name = "retrom-db"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "deadpool",
@@ -4316,7 +4317,7 @@ dependencies = [
 
 [[package]]
 name = "retrom-plugin-installer"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "dotenvy",
  "futures",
@@ -4333,7 +4334,7 @@ dependencies = [
 
 [[package]]
 name = "retrom-plugin-launcher"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "dotenvy",
  "hyper 0.14.30",
@@ -4341,6 +4342,7 @@ dependencies = [
  "hyper-util",
  "retrom-codegen",
  "retrom-plugin-installer",
+ "retrom-plugin-service-client",
  "retry",
  "serde",
  "tauri",
@@ -4356,8 +4358,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "retrom-plugin-service-client"
+version = "0.4.5"
+dependencies = [
+ "hyper 0.14.30",
+ "hyper-rustls 0.25.0",
+ "retrom-codegen",
+ "serde",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 1.0.63",
+ "tokio",
+ "tokio-rustls 0.25.0",
+ "tonic",
+ "tonic-web",
+ "tower",
+ "tracing",
+ "webpki-roots",
+]
+
+[[package]]
 name = "retrom-service"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "async_zip",
  "bigdecimal",

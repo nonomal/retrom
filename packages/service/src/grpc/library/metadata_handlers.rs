@@ -1,24 +1,29 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     grpc::jobs::job_manager::JobOptions,
-    providers::igdb::{games::match_game_igdb, platforms::match_platform_igdb},
+    providers::{
+        igdb::provider::IgdbSearchData, GameMetadataProvider, MetadataProvider,
+        PlatformMetadataProvider,
+    },
 };
 
 use super::LibraryServiceHandlers;
 use bigdecimal::ToPrimitive;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use prost::Message;
-use retrom_codegen::{
-    igdb,
-    retrom::{
-        self, GameGenre, GameMetadata, NewGameGenre, NewGameGenreMap, NewSimilarGameMap,
-        UpdateLibraryMetadataResponse,
-    },
+use retrom_codegen::retrom::{
+    self,
+    get_igdb_search_request::IgdbSearchType,
+    igdb_fields::{IncludeFields, Selector},
+    igdb_filters::{FilterOperator, FilterValue},
+    igdb_game_search_query::Fields,
+    GameGenre, GameMetadata, GetIgdbSearchRequest, IgdbFields, IgdbFilters, IgdbGameSearchQuery,
+    NewGameGenre, NewGameGenreMap, NewSimilarGameMap, PlatformMetadata,
+    UpdateLibraryMetadataResponse,
 };
 use retrom_db::schema;
-use tracing::{info, info_span, instrument, Instrument};
+use tracing::{info_span, instrument, Instrument};
 
 #[instrument(skip(state))]
 pub async fn update_metadata(
@@ -52,7 +57,7 @@ pub async fn update_metadata(
             let db_pool = db_pool.clone();
 
             async move {
-                let metadata = match_platform_igdb(igdb_provider.clone(), &platform).await;
+                let metadata = igdb_provider.get_platform_metadata(platform, None).await;
                 let mut conn = match db_pool.get().await {
                     Ok(conn) => conn,
                     Err(why) => {
@@ -79,7 +84,7 @@ pub async fn update_metadata(
         })
         .collect();
 
-    let games = schema::games::table.load(&mut conn).await.map_err(|e| {
+    let games: Vec<retrom::Game> = schema::games::table.load(&mut conn).await.map_err(|e| {
         tracing::error!("Failed to load games: {}", e);
         e.to_string()
     })?;
@@ -92,14 +97,39 @@ pub async fn update_metadata(
             let db_pool = db_pool.clone();
 
             async move {
-                let metadata = match_game_igdb(igdb_provider.clone(), &game).await;
-
                 let mut conn = match db_pool.get().await {
                     Ok(conn) => conn,
                     Err(why) => {
                         return Err(why.to_string());
                     }
                 };
+
+                let query = match game.platform_id {
+                    Some(id) => {
+                        let platform_meta: Option<PlatformMetadata> =
+                            schema::platform_metadata::table
+                                .find(id)
+                                .first(&mut conn)
+                                .await
+                                .ok();
+
+                        let platform_igdb_id = platform_meta
+                            .and_then(|meta| meta.igdb_id)
+                            .and_then(|id| id.to_u64());
+
+                        IgdbGameSearchQuery {
+                            fields: Some(Fields {
+                                platform: platform_igdb_id,
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }
+                        .into()
+                    }
+                    None => None,
+                };
+
+                let metadata = igdb_provider.get_game_metadata(game, query).await;
 
                 if let Some(metadata) = metadata {
                     if let Err(e) = diesel::insert_into(schema::game_metadata::table)
@@ -161,33 +191,47 @@ pub async fn update_metadata(
                     }
                 };
 
-                let query_fields = "fields genres.*, \
-                        similar_games.id, \
-                        franchise.games.id, \
-                        franchises.games.id;";
+                let mut filter_map = HashMap::<String, FilterValue>::new();
 
-                let query_where = format!("where id = {};", game_igdb_id);
+                filter_map.insert(
+                    "id".to_string(),
+                    FilterValue {
+                        value: game_igdb_id.to_string(),
+                        operator: i32::from(FilterOperator::Equal).into(),
+                    },
+                );
 
-                let query = format!("{} {}", query_fields, query_where);
+                let filters = IgdbFilters {
+                    filters: filter_map,
+                }
+                .into();
 
-                let res = match igdb_provider.make_request("games.pb".into(), query).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        return Err(format!("Failed to make IGDB request: {}", e));
-                    }
+                let fields = IgdbFields {
+                    selector: Some(Selector::Include(IncludeFields {
+                        value: [
+                            "genres.*",
+                            "similar_games.id",
+                            "franchise.games.id",
+                            "franchises.games.id",
+                        ]
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    })),
+                }
+                .into();
+
+                let query = GetIgdbSearchRequest {
+                    search_type: IgdbSearchType::Game.into(),
+                    fields,
+                    filters,
+                    ..Default::default()
                 };
 
-                let bytes = match res.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        return Err(format!("Failed to get IGDB response: {}", e));
-                    }
-                };
-
-                let extra_metadata = match igdb::GameResult::decode(bytes) {
-                    Ok(metadata) => metadata,
-                    Err(e) => {
-                        return Err(format!("Failed to parse IGDB response: {}", e));
+                let extra_metadata = match igdb_provider.search_metadata(query).await {
+                    Some(IgdbSearchData::Game(matches)) => matches,
+                    _ => {
+                        return Ok(());
                     }
                 };
 
