@@ -26,7 +26,7 @@ jobs:
             config: "--config tauri.build.conf.json"
             target: "--target x86_64-apple-darwin"
             rustflags: "-L/opt/homebrew/opt/libpq/lib"
-          - platform: "ubuntu-22.04" # for Tauri v1 you could replace this with ubuntu-20.04.
+          - platform: "ubuntu-24.04"
             config: "--config tauri.build.conf.json"
           - platform: "windows-latest"
             config: "--config tauri.build.conf.json"
@@ -63,11 +63,20 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
+      - name: install dependencies (ubuntu 24 only)
+        if: matrix.platform == 'ubuntu-24.04' # This must match the platform value defined above.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpq-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libpq-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libwebkit2gtk-4.1-0=2.44.0-2 \
+            libwebkit2gtk-4.1-dev=2.44.0-2 \
+            libjavascriptcoregtk-4.1-0=2.44.0-2 \
+            libjavascriptcoregtk-4.1-dev=2.44.0-2 \
+            gir1.2-javascriptcoregtk-4.1=2.44.0-2 \
+            gir1.2-webkit2-4.1=2.44.0-2
 
       - name: install dependencies (windows only)
         if: matrix.platform == 'windows-latest' # This must match the platform value defined above.
@@ -122,6 +131,6 @@ jobs:
           tauriScript: pnpm tauri
           args: ${{ matrix.target }}
           prerelease: true
-          releaseDraft: true
-          releaseName: ${{ github.event.pull_request.title }}
-          tagName: ${{ github.event.pull_request.head.ref }}
+          releaseDraft: ${{ !startsWith(github.event.pull_request.head.ref, 'release-plz') }}
+          releaseName: ${{ github.event.pull_request.title }}-pre.${{ github.event.pull_request.head.sha }}
+          tagName: ${{ github.event.pull_request.title }}-pre.${{ github.event.pull_request.head.sha }}

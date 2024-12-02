@@ -17,7 +17,6 @@ pub enum JobError {
     Io(#[from] std::io::Error),
 }
 
-pub type Result<T> = std::result::Result<T, JobError>;
 type JobId = Uuid;
 
 #[derive(Debug, Clone)]
@@ -167,8 +166,6 @@ impl JobManager {
                         if let Some(job) = job_progress.get_mut(&id) {
                             job.percent = percent;
                         };
-
-                        tracing::debug!("Job progress written: {:?}", percent);
                     }
 
                     if let Err(why) = invalidate_sender.send(id) {

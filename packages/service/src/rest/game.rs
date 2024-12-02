@@ -5,13 +5,11 @@ use async_zip::{tokio::write::ZipFileWriter, Compression, ZipEntryBuilder};
 use diesel::associations::HasTable;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use futures::AsyncWriteExt;
 use http::header;
 use retrom_codegen::retrom;
 use retrom_db::Pool;
-use tokio::io::AsyncReadExt;
 use tokio_util::{compat::FuturesAsyncWriteCompatExt, io::ReaderStream};
-use tracing::{debug, instrument, warn};
+use tracing::{instrument, warn};
 use walkdir::WalkDir;
 use warp::{filters::BoxedFilter, Filter};
 
