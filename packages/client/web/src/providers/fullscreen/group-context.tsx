@@ -61,7 +61,7 @@ export function GroupContextProvider(props: PropsWithChildren) {
       kind: "metadataProperty",
       id: -1,
       name: "All Games",
-      games,
+      games: games?.slice(0, 50),
     }),
     [games],
   );
@@ -71,31 +71,37 @@ export function GroupContextProvider(props: PropsWithChildren) {
       kind: "metadataProperty",
       id: -2,
       name: "Recently Played",
-      games: games?.sort((a, b) => {
-        const aLastPlayed = timestampToDate(a.metadata?.lastPlayed).getTime();
-        const bLastPlayed = timestampToDate(b.metadata?.lastPlayed).getTime();
+      games: games
+        ?.sort((a, b) => {
+          const aLastPlayed = timestampToDate(a.metadata?.lastPlayed).getTime();
+          const bLastPlayed = timestampToDate(b.metadata?.lastPlayed).getTime();
 
-        return bLastPlayed - aLastPlayed;
-      }),
+          return bLastPlayed - aLastPlayed;
+        })
+        .slice(0, 50),
     }),
     [games],
   );
 
   const platformGroups: Group[] = useMemo(
     () =>
-      platforms?.map((platform) => ({
-        kind: "platform",
-        id: platform.id,
-        name: platform.metadata?.name ?? getFileStub(platform.path),
-        url: "/fullscreen/platforms/$platformId",
-        params: { platformId: platform.id.toString() },
-        games: games?.filter((game) => game.platformId === platform.id),
-      })) ?? [],
+      platforms
+        ?.map((platform) => ({
+          kind: "platform",
+          id: platform.id,
+          name: platform.metadata?.name ?? getFileStub(platform.path),
+          url: "/fullscreen/platforms/$platformId",
+          params: { platformId: platform.id.toString() },
+          games: games?.filter((game) => game.platformId === platform.id),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)) ?? [],
     [platforms, games],
   );
 
   const allGroups: Group[] = useMemo(() => {
-    return [allGames, recentlyPlayed].concat(platformGroups);
+    return [allGames, recentlyPlayed]
+      .concat(platformGroups)
+      .filter((group) => group.games?.length);
   }, [allGames, recentlyPlayed, platformGroups]);
 
   const { activeGroup, nextGroup, previousGroup } = useMemo(() => {

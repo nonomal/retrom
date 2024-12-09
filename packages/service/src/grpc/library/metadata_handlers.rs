@@ -1,24 +1,33 @@
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    convert::Infallible,
+    sync::Arc,
+};
 
 use crate::{
     grpc::jobs::job_manager::JobOptions,
-    providers::igdb::{games::match_game_igdb, platforms::match_platform_igdb},
+    providers::{
+        igdb::provider::IgdbSearchData, GameMetadataProvider, MetadataProvider,
+        PlatformMetadataProvider,
+    },
 };
 
 use super::LibraryServiceHandlers;
 use bigdecimal::ToPrimitive;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use prost::Message;
-use retrom_codegen::{
-    igdb,
-    retrom::{
-        self, GameGenre, GameMetadata, NewGameGenre, NewGameGenreMap, NewSimilarGameMap,
-        UpdateLibraryMetadataResponse,
-    },
+use retrom_codegen::retrom::{
+    self,
+    get_igdb_search_request::IgdbSearchType,
+    igdb_fields::{IncludeFields, Selector},
+    igdb_filters::{FilterOperator, FilterValue},
+    igdb_game_search_query::Fields,
+    GameGenre, GameMetadata, GetIgdbSearchRequest, IgdbFields, IgdbFilters, IgdbGameSearchQuery,
+    NewGameGenre, NewGameGenreMap, NewSimilarGameMap, PlatformMetadata,
+    UpdateLibraryMetadataResponse,
 };
 use retrom_db::schema;
-use tracing::{info, info_span, instrument, Instrument};
+use tracing::{info_span, instrument, Instrument};
 
 #[instrument(skip(state))]
 pub async fn update_metadata(
@@ -35,6 +44,7 @@ pub async fn update_metadata(
     };
 
     let platforms = match schema::platforms::table
+        .filter(schema::platforms::third_party.eq(false))
         .load::<retrom::Platform>(&mut conn)
         .await
     {
@@ -52,7 +62,7 @@ pub async fn update_metadata(
             let db_pool = db_pool.clone();
 
             async move {
-                let metadata = match_platform_igdb(igdb_provider.clone(), &platform).await;
+                let metadata = igdb_provider.get_platform_metadata(platform, None).await;
                 let mut conn = match db_pool.get().await {
                     Ok(conn) => conn,
                     Err(why) => {
@@ -73,16 +83,22 @@ pub async fn update_metadata(
                         })?;
                 };
 
+                tracing::info!("Platform metadata task completed");
+
                 Ok(())
             }
             .instrument(info_span!("Platform Metadata Task"))
         })
         .collect();
 
-    let games = schema::games::table.load(&mut conn).await.map_err(|e| {
-        tracing::error!("Failed to load games: {}", e);
-        e.to_string()
-    })?;
+    let games: Vec<retrom::Game> = schema::games::table
+        .filter(schema::games::third_party.eq(false))
+        .load(&mut conn)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to load games: {}", e);
+            e.to_string()
+        })?;
 
     let game_tasks = games
         .clone()
@@ -92,14 +108,39 @@ pub async fn update_metadata(
             let db_pool = db_pool.clone();
 
             async move {
-                let metadata = match_game_igdb(igdb_provider.clone(), &game).await;
-
                 let mut conn = match db_pool.get().await {
                     Ok(conn) => conn,
                     Err(why) => {
                         return Err(why.to_string());
                     }
                 };
+
+                let query = match game.platform_id {
+                    Some(id) => {
+                        let platform_meta: Option<PlatformMetadata> =
+                            schema::platform_metadata::table
+                                .find(id)
+                                .first(&mut conn)
+                                .await
+                                .ok();
+
+                        let platform_igdb_id = platform_meta
+                            .and_then(|meta| meta.igdb_id)
+                            .and_then(|id| id.to_u64());
+
+                        IgdbGameSearchQuery {
+                            fields: Some(Fields {
+                                platform: platform_igdb_id,
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }
+                        .into()
+                    }
+                    None => None,
+                };
+
+                let metadata = igdb_provider.get_game_metadata(game, query).await;
 
                 if let Some(metadata) = metadata {
                     if let Err(e) = diesel::insert_into(schema::game_metadata::table)
@@ -161,33 +202,47 @@ pub async fn update_metadata(
                     }
                 };
 
-                let query_fields = "fields genres.*, \
-                        similar_games.id, \
-                        franchise.games.id, \
-                        franchises.games.id;";
+                let mut filter_map = HashMap::<String, FilterValue>::new();
 
-                let query_where = format!("where id = {};", game_igdb_id);
+                filter_map.insert(
+                    "id".to_string(),
+                    FilterValue {
+                        value: game_igdb_id.to_string(),
+                        operator: i32::from(FilterOperator::Equal).into(),
+                    },
+                );
 
-                let query = format!("{} {}", query_fields, query_where);
+                let filters = IgdbFilters {
+                    filters: filter_map,
+                }
+                .into();
 
-                let res = match igdb_provider.make_request("games.pb".into(), query).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        return Err(format!("Failed to make IGDB request: {}", e));
-                    }
+                let fields = IgdbFields {
+                    selector: Some(Selector::Include(IncludeFields {
+                        value: [
+                            "genres.*",
+                            "similar_games.id",
+                            "franchise.games.id",
+                            "franchises.games.id",
+                        ]
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    })),
+                }
+                .into();
+
+                let query = GetIgdbSearchRequest {
+                    search_type: IgdbSearchType::Game.into(),
+                    fields,
+                    filters,
+                    ..Default::default()
                 };
 
-                let bytes = match res.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        return Err(format!("Failed to get IGDB response: {}", e));
-                    }
-                };
-
-                let extra_metadata = match igdb::GameResult::decode(bytes) {
-                    Ok(metadata) => metadata,
-                    Err(e) => {
-                        return Err(format!("Failed to parse IGDB response: {}", e));
+                let extra_metadata = match igdb_provider.search_metadata(query).await {
+                    Some(IgdbSearchData::Game(matches)) => matches,
+                    _ => {
+                        return Ok(());
                     }
                 };
 
@@ -297,6 +352,79 @@ pub async fn update_metadata(
         })
         .collect();
 
+    let steam_provider = state.steam_web_api_client.clone();
+    let all_steam_apps = if let Some(steam_provider) = steam_provider.as_ref() {
+        match steam_provider.get_owned_games().await {
+            Ok(res) => res.response.games,
+            Err(e) => {
+                tracing::error!("Failed to get owned games: {}", e);
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    let steam_games: Arc<Vec<retrom::Game>> = Arc::new(
+        schema::games::table
+            .filter(schema::games::steam_app_id.is_not_null())
+            .load::<retrom::Game>(&mut conn)
+            .await
+            .unwrap_or_default(),
+    );
+
+    let steam_tasks: Vec<_> = all_steam_apps
+        .into_iter()
+        .map(|app| {
+            let steam_provider = steam_provider.clone();
+            let db_pool = db_pool.clone();
+            let steam_games = steam_games.clone();
+
+            let steam_appid = app.appid;
+
+            let game = steam_games
+                .iter()
+                .find(|game| game.steam_app_id == steam_appid.to_i64())
+                .cloned()
+                .expect("Game not found");
+
+            async move {
+                let steam_provider = match steam_provider.as_ref() {
+                    Some(provider) => provider,
+                    None => return Ok::<(), Infallible>(()),
+                };
+
+                let mut conn = db_pool.get().await.expect("Failed to get connection");
+
+                let existing = schema::game_metadata::table
+                    .find(game.id)
+                    .first::<retrom::GameMetadata>(&mut conn)
+                    .await;
+
+                if existing.is_ok() && !overwrite {
+                    tracing::info!("Metadata already exists for game {}", game.path);
+                    return Ok(());
+                }
+
+                let metadata = steam_provider
+                    .get_game_metadata(game, Some(app))
+                    .await
+                    .expect("Could not get metadata");
+
+                if let Err(why) = diesel::insert_into(schema::game_metadata::table)
+                    .values(&metadata)
+                    .on_conflict_do_nothing()
+                    .execute(&mut conn)
+                    .await
+                {
+                    tracing::error!("Failed to update metadata: {}", why);
+                }
+
+                Ok::<(), Infallible>(())
+            }
+        })
+        .collect();
+
     let job_manager = state.job_manager.clone();
     let platform_metadata_job_id = job_manager
         .spawn("Downloading Platform Metadata", platform_tasks, None)
@@ -304,6 +432,16 @@ pub async fn update_metadata(
 
     let game_job_opts = JobOptions {
         wait_on_jobs: Some(vec![platform_metadata_job_id]),
+    };
+
+    let steam_metadata_job_id = if steam_provider.is_some() {
+        let id = job_manager
+            .spawn("Downloading Steam Metadata", steam_tasks, None)
+            .await;
+
+        Some(id.to_string())
+    } else {
+        None
     };
 
     let game_metadata_job_id = job_manager
@@ -326,5 +464,6 @@ pub async fn update_metadata(
         platform_metadata_job_id: platform_metadata_job_id.to_string(),
         game_metadata_job_id: game_metadata_job_id.to_string(),
         extra_metadata_job_id: extra_metadata_job_id.to_string(),
+        steam_metadata_job_id,
     })
 }

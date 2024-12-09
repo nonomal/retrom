@@ -10,13 +10,14 @@ import { LoaderCircleIcon, PlayIcon, PlusIcon, Square } from "lucide-react";
 import { useEmulators } from "@/queries/useEmulators";
 import { useGameDetail } from "@/providers/game-details";
 import { useMatch, useNavigate } from "@tanstack/react-router";
-import { FocusableElement } from "../fullscreen/focus-container";
+import { useToast } from "../ui/use-toast";
 
 export const PlayGameButton = forwardRef(
   (
     props: ComponentProps<typeof Button>,
     forwardedRef: ForwardedRef<HTMLButtonElement>,
   ) => {
+    const { toast } = useToast();
     const { game, platform, gameFiles } = useGameDetail();
     const { mutate: playAction } = usePlayGame(game);
     const { mutate: stopAction } = useStopGame(game);
@@ -61,7 +62,7 @@ export const PlayGameButton = forwardRef(
 
     const file = gameFiles?.find((file) => file.id === game.defaultFileId);
     const disabled = queryStatus !== "success";
-    const shouldAddEmulator = !emulator && !fullscreenMatch;
+    const shouldAddEmulator = !emulator && !fullscreenMatch && !game.thirdParty;
 
     const onClick = useCallback(() => {
       if (disabled) return;
@@ -76,6 +77,12 @@ export const PlayGameButton = forwardRef(
         return;
       }
 
+      toast({
+        title: game.thirdParty ? "Launching External Game" : "Launching Game",
+        description: "Launching the game, this may take a few seconds.",
+        duration: 3000,
+      });
+
       playAction({
         game,
         emulatorProfile: defaultProfile,
@@ -83,6 +90,7 @@ export const PlayGameButton = forwardRef(
         file,
       });
     }, [
+      toast,
       navigate,
       disabled,
       defaultProfile,
@@ -123,24 +131,25 @@ export const PlayGameButton = forwardRef(
         );
       }
 
+      const text = game.thirdParty ? "Launch In Steam" : "Play";
+
       return (
         <>
           <PlayIcon className="h-[1.2rem] w-[1.2rem] fill-current" />
-          Play
+          {text}
         </>
       );
     };
 
     return (
-      <FocusableElement
+      <Button
         ref={forwardedRef}
-        initialFocus
-        opts={{ focusKey: "play-game-button", forceFocus: true }}
+        {...props}
+        disabled={disabled}
+        onClick={onClick}
       >
-        <Button {...props} disabled={disabled} onClick={onClick}>
-          <Content />
-        </Button>
-      </FocusableElement>
+        <Content />
+      </Button>
     );
   },
 );
